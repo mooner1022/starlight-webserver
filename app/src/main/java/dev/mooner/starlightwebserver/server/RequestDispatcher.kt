@@ -29,6 +29,8 @@ import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
+import io.ktor.util.cio.ChannelIOException
+import io.ktor.utils.io.ClosedByteChannelException
 import io.ktor.utils.io.readBuffer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -60,8 +62,13 @@ class RequestDispatcher(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            log("Failed to handle $method $path: $e")
-            if (call.response.isCommitted) 500 else respondError(call, HttpStatusCode.InternalServerError)
+            if (isDisconnect(e)) {
+                // The client went away, as when a browser stops a download. What was sent is still the answer.
+                if (call.response.isCommitted) call.response.status()?.value ?: HttpStatusCode.OK.value else CLIENT_CLOSED_REQUEST
+            } else {
+                log("Failed to handle $method $path: $e")
+                if (call.response.isCommitted) 500 else respondError(call, HttpStatusCode.InternalServerError)
+            }
         }
         val durationMillis = (System.nanoTime() - startNanos) / 1_000_000
         stats.record(ServerStats.Record(System.currentTimeMillis(), method, path, status, durationMillis, project))
@@ -253,6 +260,10 @@ class RequestDispatcher(
         return status.value
     }
 
+    /** Whether [e] means the connection broke while the request was read or the response written. */
+    private fun isDisconnect(e: Throwable): Boolean =
+        e is ChannelIOException || e is ClosedByteChannelException
+
     private fun parseContentType(value: String): ContentType =
         try {
             ContentType.parse(value)
@@ -271,5 +282,7 @@ class RequestDispatcher(
         const val TOKEN_QUERY = "token"
         const val INDEX_FILE = "index.html"
         const val CORS_MAX_AGE = "600"
+        /** Recorded for a request the client gave up on before the answer: nginx's convention, not an error. */
+        const val CLIENT_CLOSED_REQUEST = 499
     }
 }

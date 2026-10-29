@@ -25,7 +25,9 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.net.HttpURLConnection
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.URL
+import java.util.concurrent.CopyOnWriteArrayList
 
 /** Requests over HTTP to handlers written in NeonJS, set up the way StarLight sets up its engine. */
 class ServerIntegrationTest {
@@ -39,6 +41,7 @@ class ServerIntegrationTest {
     private val port = ServerSocket(0).use { it.localPort }
     private val routers = ProjectRouters(registry) { ServerInfo(true, port, listOf("http://127.0.0.1:$port")) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val logged = CopyOnWriteArrayList<String>()
 
     @Volatile
     private var settings = ServerSettings(handlerTimeoutMillis = 2_000)
@@ -55,7 +58,7 @@ class ServerIntegrationTest {
         projectDir.resolve("secret.txt").writeText("secret")
         owner = FakeOwner(directory = projectDir)
 
-        engine = HttpServerEngine(RequestDispatcher(registry, stats, { settings }, scope) {})
+        engine = HttpServerEngine(RequestDispatcher(registry, stats, { settings }, scope) { logged += it })
         engine.start("127.0.0.1", port)
 
         neon = NeonEngine.builder()
@@ -78,6 +81,30 @@ class ServerIntegrationTest {
         engine.stop()
         scope.cancel()
         neon.close()
+    }
+
+    @Test
+    fun clientsLeavingAreNotErrors() {
+        // A browser stops a download.
+        owner.directory.resolve("public/big.bin").writeBytes(ByteArray(8_000_000))
+        Socket("127.0.0.1", port).use { socket ->
+            socket.getOutputStream().apply { write("GET /static/big.bin HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".toByteArray()); flush() }
+            socket.getInputStream().readNBytes(100)
+            socket.setSoLinger(true, 0)
+        }
+        // A client drops the connection while sending.
+        Socket("127.0.0.1", port).use { socket ->
+            val head = "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\nhalf"
+            socket.getOutputStream().apply { write(head.toByteArray()); flush() }
+            Thread.sleep(200)
+            socket.setSoLinger(true, 0)
+        }
+        Thread.sleep(500)
+
+        assertEquals(emptyList<String>(), logged)
+        val snapshot = stats.snapshot()
+        assertEquals(0L, snapshot.errors)
+        assertEquals(listOf(499, 200), snapshot.recent.map { it.status })
     }
 
     @Test
@@ -186,7 +213,7 @@ class ServerIntegrationTest {
 
     @Test
     fun portInUseFailsToStart() {
-        val second = HttpServerEngine(RequestDispatcher(registry, stats, { settings }, scope) {})
+        val second = HttpServerEngine(RequestDispatcher(registry, stats, { settings }, scope) { logged += it })
         assertThrows(Exception::class.java) { second.start("127.0.0.1", port) }
         assertFalse(second.isRunning)
         // The running server is unaffected.
