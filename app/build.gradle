@@ -13,9 +13,9 @@ android {
         applicationId "dev.mooner.starlightwebserver"
         minSdk 26
         targetSdk 33
-        versionCode 1
+        versionCode 2
         // Used as the plugin version in starlight.json checks.
-        versionName "0.1.0"
+        versionName "0.1.1"
     }
 
     buildTypes {
@@ -31,16 +31,10 @@ android {
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_11.toString()
     }
-    packaging {
-        resources {
-            // Keeps META-INF/services (SLF4J provider), which is needed at runtime.
-            excludes += ['META-INF/*', 'META-INF/versions/**', 'META-INF/native-image/**', 'META-INF/rewrite/**', 'META-INF/maven/**']
-        }
-    }
     testOptions {
         unitTests.returnDefaultValues = true
         unitTests.all { test ->
-            // The SLF4J provider in main resources needs StarLight, which tests don't have.
+            // Tests have Ktor and SLF4J without the Ktor plugin's provider.
             test.systemProperty 'slf4j.provider', 'org.slf4j.helpers.NOP_FallbackServiceProvider'
             // Lets the test client send CORS headers such as Origin.
             test.systemProperty 'sun.net.http.allowRestrictedHeaders', 'true'
@@ -72,10 +66,12 @@ dependencies {
     // StarLight's NeonJS engine: handlers' JS values and promises arrive as NeonValues.
     compileOnly "dev.mooner.neonjs:neonjs-core:0.1.5"
 
-    implementation "io.ktor:ktor-server-cio:3.6.0"
+    // Provided by the Ktor plugin (starlight.json: "ktor@3.6.0"); keep the versions equal.
+    compileOnly "io.ktor:ktor-server-cio:3.6.0"
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0"
     testImplementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0"
     testImplementation "dev.mooner.neonjs:neonjs-core:0.1.5"
+    testImplementation "io.ktor:ktor-server-cio:3.6.0"
 }

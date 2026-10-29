@@ -2,9 +2,10 @@
   "id":"webserver",
   "name":"Web Server",
   "main_class":"dev.mooner.starlightwebserver.StarlightWebServerPlugin",
-  "version":"0.1.0",
+  "version":"0.1.1",
   "api_version":"0.3.2",
   "assetRevision":1,
+  "dependency":["ktor@3.6.0"],
   "authors":["mooner"],
   "description":"HTTP server that routes requests to StarLight projects"
 }

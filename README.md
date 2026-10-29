@@ -3,6 +3,9 @@
 StarLight 프로젝트(스크립트)가 HTTP 요청을 처리할 수 있게 해 주는 웹 서버 플러그인입니다.
 Ktor(CIO 엔진) 위에서 동작하며, 홈 화면용 상태 위젯을 함께 제공합니다.
 
+**필수 의존성:** [Ktor 플러그인](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`). Ktor는 이 플러그인에 포함되지 않고 Ktor 플러그인에서 불러오며,
+Ktor 로그는 `Ktor/…` 태그로 남습니다.
+
 ## 스크립트에서 사용하기
 
 프로젝트 설정의 이벤트 목록에서 **웹 서버 설정**(`webserver.server.setup`)을 허용하고 아래 함수를 작성하세요.
@@ -106,6 +109,9 @@ WebServer.get("/ping", () => "pong");
 ./gradlew :app:testReleaseUnitTest  # 라우팅, NeonJS 연동, HTTP 통합 테스트
 ./gradlew :app:deployReleaseSlp -Pstarlight.device=<serial>
 ```
+
+Ktor는 `compileOnly`이며 런타임에는 Ktor 플러그인에서 불러옵니다. Ktor 버전을 올릴 때는
+`app/build.gradle`의 Ktor 버전, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
 
 `app/libs`의 `PluginCore-release.aar`, `ConfigDSL-release.aar`은 StarLight 저장소에서 빌드한 것입니다
 (`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`). 위젯 DSL(`widget { }`)이 포함된 버전이 필요합니다.
