@@ -4,7 +4,7 @@
   "category":"utility",
   "main_class":"dev.mooner.starlightwebserver.StarlightWebServerPlugin",
   "version":"0.1.2",
-  "api_version":"0.3.2",
+  "api_version":"1.0.0",
   "assetRevision":1,
   "dependency":["ktor@3.6.0"],
   "authors":["mooner"],

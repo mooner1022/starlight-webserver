@@ -3,6 +3,8 @@
 StarLight 프로젝트(스크립트)가 HTTP 요청을 처리할 수 있게 해 주는 웹 서버 플러그인입니다.
 Ktor(CIO 엔진) 위에서 동작하며, 홈 화면용 상태 위젯을 함께 제공합니다.
 
+**StarLight nightly(PluginCore 1.0.0) 이상이 필요합니다.** 정식 앱(0.3.4b)에서는 불러오지 않습니다.
+
 **필수 의존성:** [Ktor 플러그인](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`). Ktor는 이 플러그인에 포함되지 않고 Ktor 플러그인에서 불러오며,
 Ktor 로그는 `Ktor/…` 태그로 남습니다.
 
@@ -78,8 +80,8 @@ export function onWebServerSetup(server) {
 ## 설정
 
 - **일반**: 포트(1024–65535, 기본 8080), 접속 허용 범위(모든 네트워크 / 이 기기에서만), 자동 시작
-- **제어**: 상태 표시(눌러서 주소 복사), 시작/중지, 재시작
-- **보안**: 접근 토큰 필수 여부와 토큰(SHA-256 해시로만 저장, `Authorization: Bearer <토큰>` 또는 `?token=`), CORS 허용
+- **제어**: 서버 상태와 접속 주소(실시간, 눌러서 주소 복사), 시작/중지, 재시작, 최근 요청 목록
+- **보안**: 접근 토큰 필수 여부와 토큰(필수일 때만 표시, SHA-256 해시로만 저장, `Authorization: Bearer <토큰>` 또는 `?token=`), CORS 허용
 - **요청**: 최대 본문 크기, 핸들러 제한 시간
 - **로그**: 모든 요청 로그 표시
 
@@ -114,7 +116,7 @@ Ktor는 `compileOnly`이며 런타임에는 Ktor 플러그인에서 불러옵니
 `app/build.gradle`의 Ktor 버전, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
 
 `app/libs`의 `PluginCore-release.aar`, `ConfigDSL-release.aar`은 StarLight 저장소에서 빌드한 것입니다
-(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`). 위젯 DSL(`widget { }`)이 포함된 버전이 필요합니다.
+(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`, nightly 브랜치의 PluginCore 1.0.0).
 
 `assets/` 아래 파일(아이콘 등)을 바꾸면 `starlight.json`의 `assetRevision`을 올려야 합니다.
 StarLight는 이 값이 바뀔 때만 에셋을 다시 풀어 두기 때문에, 그대로 두면 기존 설치본에 이전 에셋이 남습니다.

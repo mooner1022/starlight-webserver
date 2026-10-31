@@ -1,21 +1,27 @@
 package dev.mooner.starlightwebserver
 
 import android.text.InputType
+import dev.mooner.configdsl.ConfigActionScope
 import dev.mooner.configdsl.ConfigStructure
 import dev.mooner.configdsl.Icon
 import dev.mooner.configdsl.config
+import dev.mooner.configdsl.options.InfoState
+import dev.mooner.configdsl.options.OptionStatus
 import dev.mooner.configdsl.options.button
+import dev.mooner.configdsl.options.choice
+import dev.mooner.configdsl.options.info
 import dev.mooner.configdsl.options.password
 import dev.mooner.configdsl.options.seekbar
 import dev.mooner.configdsl.options.spinner
 import dev.mooner.configdsl.options.string
+import dev.mooner.configdsl.options.textList
 import dev.mooner.configdsl.options.toggle
+import dev.mooner.configdsl.utils.PeekType
 import dev.mooner.starlight.plugincore.Session
 import dev.mooner.starlight.plugincore.config.data.ConfigData
 import dev.mooner.starlight.plugincore.event.EventHandler
 import dev.mooner.starlight.plugincore.event.Events
 import dev.mooner.starlight.plugincore.event.on
-import dev.mooner.starlight.plugincore.logger.LogData
 import dev.mooner.starlight.plugincore.logger.LoggerFactory
 import dev.mooner.starlight.plugincore.plugin.StarlightPlugin
 import dev.mooner.starlight.plugincore.project.Project
@@ -28,6 +34,7 @@ import dev.mooner.starlightwebserver.server.HttpServerEngine
 import dev.mooner.starlightwebserver.server.RequestDispatcher
 import dev.mooner.starlightwebserver.server.ServerSettings
 import dev.mooner.starlightwebserver.server.ServerState
+import dev.mooner.starlightwebserver.stats.ServerStats
 import dev.mooner.starlightwebserver.utils.ANY_HOST
 import dev.mooner.starlightwebserver.utils.LOCALHOST
 import dev.mooner.starlightwebserver.utils.copyServerUrl
@@ -37,7 +44,13 @@ import dev.mooner.starlightwebserver.widget.WebServerWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -54,6 +67,7 @@ class StarlightWebServerPlugin : StarlightPlugin() {
             contextClassLoader = StarlightWebServerPlugin::class.java.classLoader
         }
     }
+    private val serverDispatcher = serverExecutor.asCoroutineDispatcher()
 
     /** Lives from onEnable to onDisable; runs event subscriptions and request handlers. */
     private var pluginScope: CoroutineScope? = null
@@ -61,8 +75,12 @@ class StarlightWebServerPlugin : StarlightPlugin() {
     /** Accessed on [serverExecutor] only. */
     private var engine: HttpServerEngine? = null
 
-    @Volatile
-    private var settings = ServerSettings()
+    private val settingsFlow = MutableStateFlow(ServerSettings())
+    private var settings: ServerSettings
+        get() = settingsFlow.value
+        set(value) {
+            settingsFlow.value = value
+        }
     @Volatile
     private var host: String = ANY_HOST
     @Volatile
@@ -83,13 +101,7 @@ class StarlightWebServerPlugin : StarlightPlugin() {
             }
         }
         addApi(WebServerApi())
-        try {
-            addWidget(WebServerWidget)
-        } catch (e: LinkageError) {
-            LOG.warn {
-                tr("Widget is not supported by this StarLight version: $e", "이 StarLight 버전에서는 위젯을 지원하지 않아요: $e")
-            }
-        }
+        addWidget(WebServerWidget)
 
         EventHandler.on<Events.Project.Compile>(scope) { setUpProject(project) }
         EventHandler.on<Events.Project.InfoUpdate>(scope) { onProjectInfoUpdated(project) }
@@ -123,7 +135,7 @@ class StarlightWebServerPlugin : StarlightPlugin() {
     private fun updateConfig(config: ConfigData) {
         with(config.category(CATEGORY_GENERAL)) {
             port = getString(CONF_PORT)?.toIntOrNull()?.takeIf(::isValidPort) ?: WebServerRuntime.DEFAULT_PORT
-            host = if (getInt(CONF_BIND, BIND_ALL) == BIND_LOCAL) LOCALHOST else ANY_HOST
+            host = if (bindKey(getString(CONF_BIND)) == BIND_LOCAL) LOCALHOST else ANY_HOST
             autoStart = getBoolean(CONF_AUTO_START, true)
         }
         WebServerRuntime.configuredPort = port
@@ -230,6 +242,43 @@ class StarlightWebServerPlugin : StarlightPlugin() {
         startServer()
     }
 
+    /** Runs [block] on [serverExecutor], then tells how the server ended up. */
+    private suspend fun ConfigActionScope.changeServer(block: () -> Unit) {
+        withContext(serverDispatcher) { block() }
+        when (val state = WebServerRuntime.state.value) {
+            is ServerState.Running -> peek(tr("Server is running", "서버가 작동 중이에요"), PeekType.SUCCESS)
+            is ServerState.Failed  -> peek(state.reason, PeekType.ERROR)
+            else                   -> peek(tr("Server stopped", "서버를 중지했어요"))
+        }
+    }
+
+    /** The status row: whether the server runs, where, and whether it can accept anything. */
+    private fun statusFlow(): Flow<InfoState> =
+        combine(WebServerRuntime.state, settingsFlow) { state, settings ->
+            when (state) {
+                is ServerState.Running ->
+                    if (settings.requireToken && settings.tokenHash == null) InfoState(tr("No token", "토큰 없음"), OptionStatus.WARNING)
+                    else InfoState(tr("Running", "작동 중"), OptionStatus.OK)
+                ServerState.Starting   -> InfoState(null, OptionStatus.LOADING)
+                ServerState.Stopped    -> InfoState(tr("Stopped", "중지됨"))
+                is ServerState.Failed  -> InfoState(tr("Failed", "오류"), OptionStatus.ERROR)
+            }
+        }
+
+    private fun statusDescriptionFlow(): Flow<String?> =
+        combine(WebServerRuntime.state, settingsFlow) { state, settings ->
+            when (state) {
+                is ServerState.Running ->
+                    if (settings.requireToken && settings.tokenHash == null)
+                        tr("Access token is required but not set: every request is rejected.", "접근 토큰이 필수인데 설정되지 않아 모든 요청이 거부돼요.")
+                    else
+                        WebServerRuntime.serverInfo().urls.joinToString("\n") + "\n" + tr("Tap to copy the address.", "눌러서 주소를 복사해요.")
+                ServerState.Starting   -> tr("Starting...", "시작 중...")
+                ServerState.Stopped    -> null
+                is ServerState.Failed  -> state.reason
+            }
+        }
+
     // ------------------------------------------------------------------ config
 
     override fun getConfigStructure(): ConfigStructure = config {
@@ -251,14 +300,12 @@ class StarlightWebServerPlugin : StarlightPlugin() {
                     icon = Icon.LINK
                     iconTintColor = color { COLOR_ICON }
                 }
-                spinner {
+                choice {
                     id = CONF_BIND
                     title = tr("Accept connections from", "접속 허용 범위")
-                    items = listOf(
-                        tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"),
-                        tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"),
-                    )
-                    defaultIndex = BIND_ALL
+                    option(BIND_ALL, tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"))
+                    option(BIND_LOCAL, tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"))
+                    defaultKey = BIND_ALL
                     icon = Icon.CLOUD
                     iconTintColor = color { COLOR_ICON }
                 }
@@ -277,37 +324,23 @@ class StarlightWebServerPlugin : StarlightPlugin() {
             title = tr("Control", "제어")
             textColor = color { COLOR_SUB_TITLE }
             items {
-                button {
-                    val state = WebServerRuntime.state.value
-                    id = "state_indicator"
-                    title = when (state) {
-                        is ServerState.Running -> tr("Running on ${WebServerRuntime.serverInfo().urls.joinToString()}", "작동 중: ${WebServerRuntime.serverInfo().urls.joinToString()}")
-                        ServerState.Starting   -> tr("Starting...", "시작 중...")
-                        ServerState.Stopped    -> tr("Stopped", "중지됨")
-                        is ServerState.Failed  -> tr("Failed: ${state.reason}", "오류: ${state.reason}")
-                    }
-                    description = if (state is ServerState.Running) tr("Tap to copy the address.", "눌러서 주소를 복사합니다.") else null
+                info {
+                    id = "status"
+                    title = tr("Server", "서버")
                     icon = Icon.POWER
-                    iconTintColor = color {
-                        when (state) {
-                            is ServerState.Running -> "#4ADE80"
-                            ServerState.Starting   -> "#F2B05E"
-                            else                   -> "#FF6188"
-                        }
-                    }
+                    bind(statusFlow())
+                    bindDescription(statusDescriptionFlow())
                     setOnClickListener { view -> copyServerUrl(view.context) }
                 }
                 button {
-                    val action = if (isRunning) tr("Stop", "중지") else tr("Start", "시작")
                     id = "toggle_server"
-                    title = tr("$action server", "서버 $action")
+                    title = if (isRunning) tr("Stop server", "서버 중지") else tr("Start server", "서버 시작")
+                    bindTitle(WebServerRuntime.state.map { state ->
+                        if (state is ServerState.Running) tr("Stop server", "서버 중지") else tr("Start server", "서버 시작")
+                    })
                     icon = Icon.POWER
-                    iconTintColor = color { "#FF6188" }
-                    setOnClickListener { _ ->
-                        LOG.info(LogData.FLAG_NOTIFY) { tr("$action server...", "서버 $action 중...") }
-                        serverExecutor.execute {
-                            if (engine != null) stopServer() else startServer()
-                        }
+                    action {
+                        changeServer { if (engine != null) stopServer() else startServer() }
                     }
                 }
                 button {
@@ -315,11 +348,19 @@ class StarlightWebServerPlugin : StarlightPlugin() {
                     title = tr("Restart server", "서버 재시작")
                     description = tr("Routes registered by projects are kept.", "프로젝트가 등록한 라우트는 유지됩니다.")
                     icon = Icon.REFRESH
-                    iconTintColor = color { "#FF6188" }
-                    setOnClickListener { _ ->
-                        LOG.info(LogData.FLAG_NOTIFY) { tr("Restarting server...", "서버 재시작 중...") }
-                        serverExecutor.execute(::restartServer)
+                    action {
+                        changeServer(::restartServer)
                     }
+                }
+                textList {
+                    id = "recent_requests"
+                    title = tr("Recent requests", "최근 요청")
+                    icon = Icon.LIST_BULLETED
+                    monospace = true
+                    copyable = true
+                    emptyText = tr("No requests yet", "아직 요청이 없어요")
+                    lines = recentRequests()
+                    bind(WebServerRuntime.stats.version.map { recentRequests() })
                 }
             }
         }
@@ -347,7 +388,7 @@ class StarlightWebServerPlugin : StarlightPlugin() {
                     require = { value -> if (value.length >= MIN_TOKEN_LENGTH) null else tr("At least $MIN_TOKEN_LENGTH characters", "${MIN_TOKEN_LENGTH}자 이상 입력하세요") }
                     icon = Icon.KEY
                     iconTintColor = color { COLOR_ICON }
-                    dependency = CONF_REQUIRE_TOKEN
+                    visibleWhen(CONF_REQUIRE_TOKEN, true)
                 }
                 toggle {
                     id = CONF_CORS
@@ -418,8 +459,8 @@ class StarlightWebServerPlugin : StarlightPlugin() {
         const val CONF_TIMEOUT       = "handler_timeout"
         const val CONF_LOG_REQUESTS  = "log_requests"
 
-        const val BIND_ALL   = 0
-        const val BIND_LOCAL = 1
+        const val BIND_ALL   = "all"
+        const val BIND_LOCAL = "local"
 
         // Ports below 1024 need root on Android.
         const val MIN_PORT = 1024
@@ -439,5 +480,15 @@ class StarlightWebServerPlugin : StarlightPlugin() {
 
         fun isValidPort(port: Int): Boolean =
             port in MIN_PORT..MAX_PORT
+
+        /** The saved choice; before 0.2.0 it was the spinner's index. */
+        fun bindKey(saved: String?): String =
+            if (saved == BIND_LOCAL || saved == "1") BIND_LOCAL else BIND_ALL
+
+        fun recentRequests(): List<String> =
+            WebServerRuntime.stats.snapshot().recent.map(::describe)
+
+        fun describe(record: ServerStats.Record): String =
+            "${record.status} ${record.method} ${record.path} ${record.durationMillis}ms"
     }
 }
