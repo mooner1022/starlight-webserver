@@ -120,7 +120,7 @@ StarLight AI(PluginCore 1.1.0 이상)가 이 플러그인의 API를 설명할 �
 ```
 
 Ktor는 `compileOnly`이며 런타임에는 Ktor 플러그인에서 불러옵니다. Ktor 버전을 올릴 때는
-`app/build.gradle`의 Ktor 버전, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
+`app/build.gradle.kts`의 Ktor 버전과 `manifest { }`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
 `app/libs/ktor-api-<버전>.jar`는 Ktor 저장소의 `./gradlew :app:apiJar` 결과물입니다. 서버는 그 안의 `KtorServers`로 열고,
 StarLight는 의존성의 major.minor만 확인하므로 켜질 때 `KtorServers.apiLevel`을 확인합니다.
 
@@ -131,5 +131,5 @@ StarLight는 의존성의 major.minor만 확인하므로 켜질 때 `KtorServers
   slplugin(0.4.0 이상)이 빌드할 때 코드가 쓰는 PluginCore API를 `api_version`과 대조합니다.
 - ConfigDSL은 PluginCore 1.0.0 때 빌드한 것을 그대로 둡니다. 버전 표가 없어서 새 멤버를 써도 빌드 단계에서 알 수 없기 때문입니다.
 
-`assets/` 아래 파일(아이콘 등)을 바꾸면 `starlight.json`의 `assetRevision`을 올려야 합니다.
-StarLight는 이 값이 바뀔 때만 에셋을 다시 풀어 두기 때문에, 그대로 두면 기존 설치본에 이전 에셋이 남습니다.
+플러그인 정보는 `app/build.gradle.kts`의 `starlight { manifest { } }`에 있고, slplugin이 빌드할 때 `assets/starlight.json`을 만듭니다.
+버전은 `versionName`을 따르고, `assetRevision`은 `assets/` 아래 파일의 해시라 아이콘 등을 바꾸면 자동으로 바뀝니다.
