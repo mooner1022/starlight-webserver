@@ -6,7 +6,24 @@ import dev.mooner.starlight.plugincore.translation.Locale
 import dev.mooner.starlight.plugincore.translation.translate
 import dev.mooner.starlightwebserver.route.WebServer
 
-/** Called after each compilation of a project, with the project's router. */
+/**
+ * The project was compiled: register the routes the web server answers for it.
+ *
+ * Called once after each compilation. A project that is already compiled gets it once when the Web Server plugin
+ * starts, or when the project starts receiving this event. The routes of the previous compilation are removed before
+ * it is called.
+ *
+ * ```js
+ * export function onWebServerSetup(server) {
+ *     server.get("/hello/:name", (req, res) => res.json({ hello: req.params.name }));
+ * }
+ * ```
+ *
+ * In NeonJS the function must be exported.
+ *
+ * @param server The project's routes, valid until the next compilation.
+ * @see guide:routes
+ */
 class WebServerSetupEvent : ProjectEvent() {
 
     override val functionName: String = FUNCTION_NAME
@@ -16,6 +33,11 @@ class WebServerSetupEvent : ProjectEvent() {
     override val name: String = translate {
         Locale.ENGLISH { "Web server setup" }
         Locale.KOREAN  { "웹 서버 설정" }
+    }
+
+    override val description: String = translate {
+        Locale.ENGLISH { "After the project is compiled, to register the routes of the web server" }
+        Locale.KOREAN  { "프로젝트가 컴파일된 뒤, 웹 서버의 라우트를 등록할 때" }
     }
 
     override val functionComment: String = translate {

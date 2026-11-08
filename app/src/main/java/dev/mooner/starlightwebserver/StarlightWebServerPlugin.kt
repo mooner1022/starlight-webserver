@@ -1,7 +1,9 @@
 package dev.mooner.starlightwebserver
 
+import android.graphics.Color
 import android.text.InputType
 import dev.mooner.configdsl.ConfigActionScope
+import dev.mooner.configdsl.ConfigItemBuilder
 import dev.mooner.configdsl.ConfigStructure
 import dev.mooner.configdsl.Icon
 import dev.mooner.configdsl.config
@@ -22,18 +24,23 @@ import dev.mooner.starlight.plugincore.config.data.ConfigData
 import dev.mooner.starlight.plugincore.event.EventHandler
 import dev.mooner.starlight.plugincore.event.Events
 import dev.mooner.starlight.plugincore.event.on
+import dev.mooner.starlight.plugincore.logger.LogData
 import dev.mooner.starlight.plugincore.logger.LoggerFactory
 import dev.mooner.starlight.plugincore.plugin.StarlightPlugin
 import dev.mooner.starlight.plugincore.project.Project
 import dev.mooner.starlight.plugincore.project.event.ProjectEventManager
+import dev.mooner.starlightktor.server.KtorServer
+import dev.mooner.starlightktor.server.KtorServers
+import dev.mooner.starlightktor.server.PortInUseException
 import dev.mooner.starlightwebserver.api.WebServerApi
 import dev.mooner.starlightwebserver.event.WebServerSetupEvent
 import dev.mooner.starlightwebserver.project.ProjectRouteOwner
 import dev.mooner.starlightwebserver.route.WebServer
-import dev.mooner.starlightwebserver.server.HttpServerEngine
 import dev.mooner.starlightwebserver.server.RequestDispatcher
 import dev.mooner.starlightwebserver.server.ServerSettings
 import dev.mooner.starlightwebserver.server.ServerState
+import dev.mooner.starlightwebserver.server.ktorApiLevel
+import dev.mooner.starlightwebserver.server.serve
 import dev.mooner.starlightwebserver.stats.ServerStats
 import dev.mooner.starlightwebserver.utils.ANY_HOST
 import dev.mooner.starlightwebserver.utils.LOCALHOST
@@ -73,7 +80,7 @@ class StarlightWebServerPlugin : StarlightPlugin() {
     private var pluginScope: CoroutineScope? = null
 
     /** Accessed on [serverExecutor] only. */
-    private var engine: HttpServerEngine? = null
+    private var engine: KtorServer? = null
 
     private val settingsFlow = MutableStateFlow(ServerSettings())
     private var settings: ServerSettings
@@ -86,11 +93,30 @@ class StarlightWebServerPlugin : StarlightPlugin() {
     @Volatile
     private var port: Int = WebServerRuntime.DEFAULT_PORT
     private var autoStart = true
+    /** Set when the installed Ktor plugin is too old to start the server. */
+    @Volatile
+    private var updateNeeded: String? = null
+    /** A token is required but not set, so every request is rejected; read on the main thread by [isSetupRequired]. */
+    @Volatile
+    private var needsToken = false
+    /** Why the setup is asked for again; null for the first one. */
+    @Volatile
+    private var setupReason: String? = null
 
     private val isRunning: Boolean
         get() = WebServerRuntime.state.value is ServerState.Running
 
     override fun onEnable() {
+        // StarLight checks only the major and minor version of a dependency, not the patch this was built for.
+        // Routes are still set up without a server, so scripts using the API keep working.
+        updateNeeded = if (ktorApiLevel() < KtorServers.API_LEVEL)
+            tr(
+                "Update the Ktor plugin: Web Server needs its API level ${KtorServers.API_LEVEL} or later.",
+                "Ktor 플러그인을 업데이트하세요: 웹 서버에는 API 레벨 ${KtorServers.API_LEVEL} 이상이 필요해요.",
+            )
+        else
+            null
+        updateNeeded?.let { message -> LOG.error(LogData.FLAG_NOTIFY) { message } }
         updateConfig(getPluginConfig())
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         pluginScope = scope
@@ -123,6 +149,20 @@ class StarlightWebServerPlugin : StarlightPlugin() {
 
     override fun onConfigUpdated(config: ConfigData, updated: Map<String, Set<String>>) {
         super.onConfigUpdated(config, updated)
+        val neededToken = needsToken
+        applyConfig(config)
+        // The token was required without one, or removed while required.
+        if (needsToken && !neededToken && pluginScope != null) {
+            setupReason = tr(
+                "An access token is required but not set, so every request is rejected. Set one, or stop requiring it.",
+                "접근 토큰이 필수인데 설정되지 않아 모든 요청이 거부돼요. 토큰을 정하거나 필수를 끄세요.",
+            )
+            askForSetup()
+        }
+    }
+
+    /** Takes in [config]: a new address restarts a running server. */
+    private fun applyConfig(config: ConfigData) {
         val oldHost = host
         val oldPort = port
         updateConfig(config)
@@ -150,6 +190,69 @@ class StarlightWebServerPlugin : StarlightPlugin() {
             handlerTimeoutMillis = request.getInt(CONF_TIMEOUT, DEF_TIMEOUT_SECONDS) * 1000L,
             logRequests = config.category(CATEGORY_LOGGING).getBoolean(CONF_LOG_REQUESTS, false),
         )
+        needsToken = settings.requireToken && settings.tokenHash == null
+        if (!needsToken)
+            setupReason = null
+    }
+
+    // ------------------------------------------------------------------ setup
+
+    // Requests are open by default, so the setup is asked for only when a token is required without one. It can still
+    // be opened from the plugin list to choose who may connect and whether a token is needed.
+
+    override fun isSetupRequired(): Boolean =
+        needsToken
+
+    override fun getSetupReason(): String? =
+        setupReason
+
+    /** Who may connect, and whether requests need a token. Both are saved into the plugin config. */
+    override fun getSetupStructure(): ConfigStructure = config {
+        category {
+            id = CATEGORY_GENERAL
+            title = tr("Connection", "접속")
+            textColor = color { COLOR_TITLE }
+            items {
+                bindOption()
+            }
+        }
+        category {
+            id = CATEGORY_SECURITY
+            title = tr("Access token", "접근 토큰")
+            textColor = color { COLOR_SUB_TITLE }
+            items {
+                requireTokenOption(defaultValue = settings.requireToken)
+                // Shown regardless of the toggle: the setup dialog starts with no values to show it by.
+                tokenOption(tr(
+                    "Needed only when the token is required. Only a hash of it is stored.",
+                    "토큰 필수를 켰을 때만 필요해요. 토큰은 해시로만 저장돼요.",
+                ))
+            }
+        }
+    }
+
+    override suspend fun onSetup(values: ConfigData): String? {
+        // Untouched items are absent: fall back to what is saved.
+        val security = values.category(CATEGORY_SECURITY)
+        val requireToken = security.getBoolean(CONF_REQUIRE_TOKEN, settings.requireToken)
+        val hasToken = !security.getString(CONF_TOKEN).isNullOrBlank() || settings.tokenHash != null
+        if (requireToken && !hasToken)
+            return tr("Set an access token, or turn off requiring it.", "접근 토큰을 정하거나 토큰 필수를 끄세요.")
+        withContext(Dispatchers.IO) {
+            saveToConfig(values)
+        }
+        // Saving doesn't call onConfigUpdated.
+        applyConfig(getPluginConfig())
+        return null
+    }
+
+    /** Asks for the setup again. StarLight builds from before the setup API lack requestSetup(). */
+    private fun askForSetup() {
+        try {
+            requestSetup()
+        } catch (e: LinkageError) {
+            LOG.debug { "This StarLight build can't ask for the setup: $e" }
+        }
     }
 
     // ------------------------------------------------------------------ projects
@@ -191,6 +294,10 @@ class StarlightWebServerPlugin : StarlightPlugin() {
         if (engine != null)
             return
         val scope = pluginScope ?: return
+        updateNeeded?.let { message ->
+            WebServerRuntime.setState(ServerState.Failed(message))
+            return
+        }
         if (settings.requireToken && settings.tokenHash == null)
             LOG.warn {
                 tr(
@@ -208,11 +315,16 @@ class StarlightWebServerPlugin : StarlightPlugin() {
             handlerScope = scope,
             log = { message -> LOG.info { message } },
         )
-        val engine = HttpServerEngine(dispatcher)
-        try {
-            engine.start(host, port)
+        val engine = try {
+            dispatcher.serve(host, port) { e ->
+                LOG.error { tr("Web server error: $e", "웹 서버 오류: $e") }
+            }
         } catch (e: Throwable) {
-            WebServerRuntime.setState(ServerState.Failed(e.message ?: e.toString()))
+            val reason = if (e is PortInUseException)
+                tr("Port ${e.port} is used by ${e.owner}", "${e.owner} 플러그인이 ${e.port} 포트를 쓰고 있어요")
+            else
+                e.message ?: e.toString()
+            WebServerRuntime.setState(ServerState.Failed(reason))
             LOG.error {
                 tr("Failed to start the web server on $host:$port: $e", "$host:$port 에서 웹 서버를 시작하지 못했어요: $e")
             }
@@ -300,15 +412,7 @@ class StarlightWebServerPlugin : StarlightPlugin() {
                     icon = Icon.LINK
                     iconTintColor = color { COLOR_ICON }
                 }
-                choice {
-                    id = CONF_BIND
-                    title = tr("Accept connections from", "접속 허용 범위")
-                    option(BIND_ALL, tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"))
-                    option(BIND_LOCAL, tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"))
-                    defaultKey = BIND_ALL
-                    icon = Icon.CLOUD
-                    iconTintColor = color { COLOR_ICON }
-                }
+                bindOption()
                 toggle {
                     id = CONF_AUTO_START
                     title = tr("Start automatically", "자동 시작")
@@ -369,27 +473,8 @@ class StarlightWebServerPlugin : StarlightPlugin() {
             title = tr("Security", "보안")
             textColor = color { COLOR_SUB_TITLE }
             items {
-                toggle {
-                    id = CONF_REQUIRE_TOKEN
-                    title = tr("Require access token", "접근 토큰 필수")
-                    description = tr(
-                        "Requests must send the token as 'Authorization: Bearer <token>' or '?token=<token>'.",
-                        "요청에 'Authorization: Bearer <토큰>' 헤더나 '?token=<토큰>' 파라미터가 있어야 합니다.",
-                    )
-                    defaultValue = false
-                    icon = Icon.LOCK
-                    iconTintColor = color { COLOR_ICON }
-                }
-                password {
-                    id = CONF_TOKEN
-                    title = tr("Access token", "접근 토큰")
-                    description = tr("Only a hash of the token is stored.", "토큰은 해시로만 저장됩니다.")
-                    hashCode = ::sha256Hex
-                    require = { value -> if (value.length >= MIN_TOKEN_LENGTH) null else tr("At least $MIN_TOKEN_LENGTH characters", "${MIN_TOKEN_LENGTH}자 이상 입력하세요") }
-                    icon = Icon.KEY
-                    iconTintColor = color { COLOR_ICON }
-                    visibleWhen(CONF_REQUIRE_TOKEN, true)
-                }
+                requireTokenOption(defaultValue = false)
+                tokenOption(tr("Only a hash of the token is stored.", "토큰은 해시로만 저장됩니다."), shownWithRequireToken = true)
                 toggle {
                     id = CONF_CORS
                     title = tr("Allow cross-origin requests (CORS)", "다른 출처 요청 허용 (CORS)")
@@ -439,6 +524,47 @@ class StarlightWebServerPlugin : StarlightPlugin() {
                     iconTintColor = color { COLOR_ICON }
                 }
             }
+        }
+    }
+
+    private fun ConfigItemBuilder.requireTokenOption(defaultValue: Boolean) {
+        toggle {
+            id = CONF_REQUIRE_TOKEN
+            title = tr("Require access token", "접근 토큰 필수")
+            description = tr(
+                "Requests must send the token as 'Authorization: Bearer <token>' or '?token=<token>'.",
+                "요청에 'Authorization: Bearer <토큰>' 헤더나 '?token=<토큰>' 파라미터가 있어야 합니다.",
+            )
+            this.defaultValue = defaultValue
+            icon = Icon.LOCK
+            iconTintColor = Color.parseColor(COLOR_ICON)
+        }
+    }
+
+    /** The access token, as a hash: the setup and the settings store it the same way. */
+    private fun ConfigItemBuilder.tokenOption(description: String, shownWithRequireToken: Boolean = false) {
+        password {
+            id = CONF_TOKEN
+            title = tr("Access token", "접근 토큰")
+            this.description = description
+            hashCode = ::sha256Hex
+            require = { value -> if (value.length >= MIN_TOKEN_LENGTH) null else tr("At least $MIN_TOKEN_LENGTH characters", "${MIN_TOKEN_LENGTH}자 이상 입력하세요") }
+            icon = Icon.KEY
+            iconTintColor = Color.parseColor(COLOR_ICON)
+            if (shownWithRequireToken)
+                visibleWhen(CONF_REQUIRE_TOKEN, true)
+        }
+    }
+
+    private fun ConfigItemBuilder.bindOption() {
+        choice {
+            id = CONF_BIND
+            title = tr("Accept connections from", "접속 허용 범위")
+            option(BIND_ALL, tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"))
+            option(BIND_LOCAL, tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"))
+            defaultKey = BIND_ALL
+            icon = Icon.CLOUD
+            iconTintColor = Color.parseColor(COLOR_ICON)
         }
     }
 

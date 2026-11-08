@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.serialization'
+    id 'com.google.devtools.ksp'
     id 'io.github.mooner1022.slplugin'
 }
 
@@ -64,14 +65,17 @@ dependencies {
     compileOnly "androidx.lifecycle:lifecycle-runtime-ktx:2.9.0"
     compileOnly "com.google.android.material:material:1.12.0"
     // StarLight's NeonJS engine: handlers' JS values and promises arrive as NeonValues.
-    compileOnly "dev.mooner.neonjs:neonjs-core:0.1.5"
+    compileOnly "dev.mooner.neonjs:neonjs-core:0.1.7"
 
     // Provided by the Ktor plugin (starlight.json: "ktor@3.6.0"); keep the versions equal.
     compileOnly "io.ktor:ktor-server-cio:3.6.0"
+    // KtorServers, from the Ktor plugin's apiJar output.
+    compileOnly files("libs/ktor-api-3.6.2.jar")
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0"
     testImplementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0"
-    testImplementation "dev.mooner.neonjs:neonjs-core:0.1.5"
+    testImplementation "dev.mooner.neonjs:neonjs-core:0.1.7"
     testImplementation "io.ktor:ktor-server-cio:3.6.0"
+    testImplementation files("libs/ktor-api-3.6.2.jar")
 }

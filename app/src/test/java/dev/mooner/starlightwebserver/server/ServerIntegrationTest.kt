@@ -4,6 +4,8 @@ import dev.mooner.neonjs.HostAccess
 import dev.mooner.neonjs.NeonContext
 import dev.mooner.neonjs.NeonEngine
 import dev.mooner.neonjs.SandboxPolicy
+import dev.mooner.starlightktor.server.KtorServer
+import dev.mooner.starlightktor.server.PortInUseException
 import dev.mooner.starlightwebserver.FakeOwner
 import dev.mooner.starlightwebserver.route.ProjectRouters
 import dev.mooner.starlightwebserver.route.RouteRegistry
@@ -16,7 +18,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -46,7 +47,7 @@ class ServerIntegrationTest {
     @Volatile
     private var settings = ServerSettings(handlerTimeoutMillis = 2_000)
 
-    private lateinit var engine: HttpServerEngine
+    private lateinit var engine: KtorServer
     private lateinit var neon: NeonContext
 
     @Before
@@ -58,8 +59,7 @@ class ServerIntegrationTest {
         projectDir.resolve("secret.txt").writeText("secret")
         owner = FakeOwner(directory = projectDir)
 
-        engine = HttpServerEngine(RequestDispatcher(registry, stats, { settings }, scope) { logged += it })
-        engine.start("127.0.0.1", port)
+        engine = RequestDispatcher(registry, stats, { settings }, scope) { logged += it }.serve("127.0.0.1", port)
 
         neon = NeonEngine.builder()
             .sandbox(SandboxPolicy.builder().exposeJavaGlobal(true).build())
@@ -213,9 +213,10 @@ class ServerIntegrationTest {
 
     @Test
     fun portInUseFailsToStart() {
-        val second = HttpServerEngine(RequestDispatcher(registry, stats, { settings }, scope) { logged += it })
-        assertThrows(Exception::class.java) { second.start("127.0.0.1", port) }
-        assertFalse(second.isRunning)
+        val second = RequestDispatcher(registry, stats, { settings }, scope) { logged += it }
+        // Another server in this app holds the port: told at once, naming it.
+        val e = assertThrows(PortInUseException::class.java) { second.serve("127.0.0.1", port) }
+        assertEquals("Web Server", e.owner)
         // The running server is unaffected.
         assertEquals(200, send("GET", "/text").status)
     }

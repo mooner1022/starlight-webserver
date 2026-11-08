@@ -6,7 +6,7 @@ Ktor(CIO 엔진) 위에서 동작하며, 홈 화면용 상태 위젯을 함께 �
 **StarLight nightly(PluginCore 1.0.0) 이상이 필요합니다.** 정식 앱(0.3.4b)에서는 불러오지 않습니다.
 
 **필수 의존성:** [Ktor 플러그인](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`). Ktor는 이 플러그인에 포함되지 않고 Ktor 플러그인에서 불러오며,
-Ktor 로그는 `Ktor/…` 태그로 남습니다.
+Ktor 로그는 `Ktor/…` 태그로 남습니다. Ktor 플러그인은 3.6.2 이상이어야 합니다(서버를 여는 `KtorServers`가 3.6.2에 들어 있습니다).
 
 ## 스크립트에서 사용하기
 
@@ -82,6 +82,8 @@ export function onWebServerSetup(server) {
 - **일반**: 포트(1024–65535, 기본 8080), 접속 허용 범위(모든 네트워크 / 이 기기에서만), 자동 시작
 - **제어**: 서버 상태와 접속 주소(실시간, 눌러서 주소 복사), 시작/중지, 재시작, 최근 요청 목록
 - **보안**: 접근 토큰 필수 여부와 토큰(필수일 때만 표시, SHA-256 해시로만 저장, `Authorization: Bearer <토큰>` 또는 `?token=`), CORS 허용
+- **초기 설정**: 플러그인 목록에서 언제든 열어 접속 허용 범위와 토큰 필수 여부, 토큰을 정합니다.
+  요청은 기본으로 토큰 없이 받으므로, 토큰을 필수로 켰는데 토큰이 없을 때만 StarLight가 초기 설정을 요청합니다.
 - **요청**: 최대 본문 크기, 핸들러 제한 시간
 - **로그**: 모든 요청 로그 표시
 
@@ -93,16 +95,21 @@ export function onWebServerSetup(server) {
 ## 엔진 호환성
 
 - **NeonJS (주 대상)**: `onWebServerSetup` 이벤트로 사용합니다. 핸들러는 프로젝트의 NeonJS 컨텍스트에서 실행되며 async 핸들러를 지원합니다.
-- **Rhino (레거시)**: 같은 이벤트를 쓸 수 있고, 전역 `WebServer` API로 최상위 코드에서 바로 등록할 수도 있습니다.
+- **Rhino (레거시)**: 같은 이벤트를 쓸 수 있습니다.
 
-전역 `WebServer` API는 플러그인 Api로 등록되어 있지만, 현재 StarLight의 NeonJS는 호스트 내장 패키지의 Api만 노출하므로
-NeonJS에서는 아직 보이지 않습니다. NeonJS의 Api 노출이 블랙리스트 방식으로 바뀌면 코드 수정 없이 NeonJS에서도 쓸 수 있습니다.
+두 엔진 모두 전역 `WebServer`로 최상위 코드에서 바로 등록할 수도 있습니다. 어느 API 레벨에도 속하지 않은 플러그인 Api는 모든 프로젝트에 주어집니다.
 API 객체와 이벤트는 같은 라우터를 공유하므로(컴파일 시작 시 API가 만든 라우터를 컴파일 후 이벤트가 이어받음) 둘을 섞어 써도 됩니다.
 
 ```js
-// Api 접근이 가능한 엔진에서
 WebServer.get("/ping", () => "pong");
 ```
+
+## StarLight AI
+
+StarLight AI(PluginCore 1.1.0 이상)가 이 플러그인의 API를 설명할 수 있도록 KDoc과 가이드를 패키지에 넣습니다.
+- KSP(`com.google.devtools.ksp`, AGP 8.12 이상 필요)를 적용하면 slplugin 0.5.0이 KDoc을 `starlight/agent/webserver.api.json`으로 뽑습니다.
+- 가이드는 `app/src/main/assets/agent/guides/`에 있습니다(`webserver:routes`).
+- 스크립트가 받는 타입(`WebServer`, `HttpRequest`, `HttpResponse`, `RouteHandler`)의 KDoc은 앱 저장소 `docs/agent-docs.md` §3 규칙을 따릅니다. 스크립트가 만들 일이 없는 생성자는 `internal`로 두어 문서에서 빠지게 합니다.
 
 ## 빌드
 
@@ -114,9 +121,15 @@ WebServer.get("/ping", () => "pong");
 
 Ktor는 `compileOnly`이며 런타임에는 Ktor 플러그인에서 불러옵니다. Ktor 버전을 올릴 때는
 `app/build.gradle`의 Ktor 버전, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
+`app/libs/ktor-api-<버전>.jar`는 Ktor 저장소의 `./gradlew :app:apiJar` 결과물입니다. 서버는 그 안의 `KtorServers`로 열고,
+StarLight는 의존성의 major.minor만 확인하므로 켜질 때 `KtorServers.apiLevel`을 확인합니다.
 
 `app/libs`의 `PluginCore-release.aar`, `ConfigDSL-release.aar`은 StarLight 저장소에서 빌드한 것입니다
-(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`, nightly 브랜치의 PluginCore 1.0.0).
+(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`, nightly 브랜치).
+- PluginCore는 1.1.0(full 플레이버)입니다. 이벤트의 `description`을 오버라이드하려고 올렸고, 새 멤버를 호출하지는 않으므로
+  `api_version`은 1.0.0 그대로 둡니다. PluginCore 1.0.0 앱에서도 로드되며, `description`이 쓰이지 않을 뿐입니다.
+  slplugin(0.4.0 이상)이 빌드할 때 코드가 쓰는 PluginCore API를 `api_version`과 대조합니다.
+- ConfigDSL은 PluginCore 1.0.0 때 빌드한 것을 그대로 둡니다. 버전 표가 없어서 새 멤버를 써도 빌드 단계에서 알 수 없기 때문입니다.
 
 `assets/` 아래 파일(아이콘 등)을 바꾸면 `starlight.json`의 `assetRevision`을 올려야 합니다.
 StarLight는 이 값이 바뀔 때만 에셋을 다시 풀어 두기 때문에, 그대로 두면 기존 설치본에 이전 에셋이 남습니다.
